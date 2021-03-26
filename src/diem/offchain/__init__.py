@@ -26,6 +26,13 @@ from .types import (
     NationalIdObject,
     AddressObject,
     KycDataObject,
+    FundPullPreApprovalCommandObject,
+    FundPullPreApprovalObject,
+    FundPullPreApprovalStatus,
+    FundPullPreApprovalScopeObject,
+    ScopedCumulativeAmountObject,
+    TimeUnit,
+    CurrencyObject,
     FieldError,
     InvalidOverwriteError,
     new_payment_object,
@@ -38,14 +45,15 @@ from .types import (
     from_json,
     from_dict,
     validate_write_once_fields,
+    FundPullPreApprovalType,
 )
 from .http_header import X_REQUEST_ID, X_REQUEST_SENDER_ADDRESS
 from .action import Action
 from .error import command_error, protocol_error, Error
 from .command import Command
 from .payment_command import PaymentCommand
+from .funds_pull_pre_approval_command import FundsPullPreApprovalCommand
+
 from .client import Client, CommandResponseError
 
 from . import jws, http_server, state, payment_state
-
-import typing

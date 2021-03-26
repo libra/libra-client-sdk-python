@@ -5,6 +5,7 @@
 
 import typing, dataclasses, uuid, warnings
 
+from . import CommandType
 from .types import (
     CommandRequestObject,
     ErrorCode,
@@ -69,6 +70,9 @@ class PaymentCommand(Command):
     def id(self) -> str:
         """returns `cid` from the request object"""
         return self.cid
+
+    def command_type(self) -> str:
+        return CommandType.PaymentCommand
 
     def is_inbound(self) -> bool:
         """indicates whether this `PaymentCommand` is created when processing an inbound request"""

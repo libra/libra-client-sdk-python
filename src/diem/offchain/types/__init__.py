@@ -30,8 +30,17 @@ from .payment_types import (
     CommandType,
     PaymentCommandObject,
 )
+from .fund_pull_pre_approval_types import (
+    FundPullPreApprovalObject,
+    FundPullPreApprovalStatus,
+    FundPullPreApprovalScopeObject,
+    ScopedCumulativeAmountObject,
+    TimeUnit,
+    CurrencyObject,
+    FundPullPreApprovalType,
+)
 
-import dataclasses, json, re, secrets, typing, uuid
+import dataclasses, json, re, typing, uuid
 
 
 class FieldError(ValueError):
@@ -225,6 +234,20 @@ def new_payment_request(
         command=PaymentCommandObject(
             _ObjectType=CommandType.PaymentCommand,
             payment=payment,
+        ),
+    )
+
+
+def new_funds_pull_pre_approval_request(
+    funds_pull_pre_approval: FundPullPreApprovalObject,
+    cid: typing.Optional[str] = None,
+) -> CommandRequestObject:
+    return CommandRequestObject(
+        cid=cid or str(uuid.uuid4()),
+        command_type=CommandType.FundPullPreApprovalCommand,
+        command=FundPullPreApprovalCommandObject(
+            _ObjectType=CommandType.FundPullPreApprovalCommand,
+            fund_pull_pre_approval=funds_pull_pre_approval,
         ),
     )
 

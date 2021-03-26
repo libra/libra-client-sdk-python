@@ -1,8 +1,11 @@
 # Copyright (c) The Diem Core Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-
-import requests, typing, dataclasses, uuid, math
+import dataclasses
+import math
+import requests
+import typing
+import uuid
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.exceptions import InvalidSignature
@@ -10,7 +13,7 @@ from json.decoder import JSONDecodeError
 
 from .command import Command
 from .payment_command import PaymentCommand
-
+from .funds_pull_pre_approval_command import FundsPullPreApprovalCommand
 from .types import (
     CommandType,
     CommandRequestObject,
@@ -25,9 +28,8 @@ from .types import (
 )
 from .error import command_error, protocol_error, Error
 
-from . import jws, http_header
+from . import jws, http_header, FundPullPreApprovalCommandObject, FundPullPreApprovalObject
 from .. import jsonrpc, diem_types, identifier, utils
-
 
 DEFAULT_CONNECT_TIMEOUT_SECS: float = 2.0
 DEFAULT_TIMEOUT_SECS: float = 30.0
@@ -172,6 +174,11 @@ class Client:
             elif cmd.is_rsend():
                 self.validate_recipient_signature(cmd, public_key)
             return cmd
+        elif request.command_type == CommandType.FundPullPreApprovalCommand:
+            fund_pull_pre_approval = typing.cast(
+                FundPullPreApprovalCommandObject, request.command
+            ).fund_pull_pre_approval
+            return self.create_inbound_funds_pull_pre_approval_command(request.cid, fund_pull_pre_approval)
 
         raise command_error(
             ErrorCode.unknown_command_type,
@@ -271,6 +278,26 @@ class Client:
     def get_base_url_and_compliance_key(self, account_id: str) -> typing.Tuple[str, Ed25519PublicKey]:
         account_address, _ = identifier.decode_account(account_id, self.hrp)
         return self.jsonrpc_client.get_base_url_and_compliance_key(account_address)
+
+    def create_inbound_funds_pull_pre_approval_command(
+        self, cid: str, fund_pull_pre_approval: FundPullPreApprovalObject
+    ) -> FundsPullPreApprovalCommand:
+        if self.is_my_account_id(fund_pull_pre_approval.address):
+            return FundsPullPreApprovalCommand(
+                cid=cid,
+                my_actor_address=fund_pull_pre_approval.address,
+                funds_pull_pre_approval=fund_pull_pre_approval,
+                inbound=True,
+            )
+        elif self.is_my_account_id(fund_pull_pre_approval.biller_address):
+            return FundsPullPreApprovalCommand(
+                cid=cid,
+                my_actor_address=fund_pull_pre_approval.biller_address,
+                funds_pull_pre_approval=fund_pull_pre_approval,
+                inbound=True,
+            )
+
+        raise command_error(ErrorCode.unknown_address, "unknown actor addresses: {obj}")
 
 
 def _filter_supported_currency_codes(

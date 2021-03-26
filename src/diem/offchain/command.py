@@ -14,6 +14,8 @@ class Command(ABC):
     @abstractmethod
     def id(self) -> str:
         """Returns cid of command object"""
+
+    def command_type(self) -> str:
         ...
 
     @abstractmethod
