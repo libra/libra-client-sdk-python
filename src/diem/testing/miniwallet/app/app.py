@@ -1,6 +1,7 @@
 # Copyright (c) The Diem Core Contributors
 # SPDX-License-Identifier: Apache-2.0
 
+import uuid
 from dataclasses import asdict
 from typing import List, Tuple, Dict, Optional, Any
 from json.decoder import JSONDecodeError
@@ -10,8 +11,23 @@ from .models import Subaddress, Account, Transaction, Event, KycSample, PaymentC
 from .event_puller import EventPuller
 from .json_input import JsonInput
 from ... import LocalAccount
-from .... import jsonrpc, offchain, utils
-from ....offchain import KycDataObject, Status, AbortCode, CommandResponseObject, CommandRequestObject
+from .... import jsonrpc, offchain, utils, identifier
+from ....offchain import (
+    KycDataObject,
+    Status,
+    AbortCode,
+    CommandResponseObject,
+    CommandRequestObject,
+    CommandType,
+    protocol_error,
+    command_error,
+    ErrorCode,
+    ReferenceIDCommandObject,
+    ReferenceIDCommandResultObject,
+    from_dict,
+    to_dict,
+)
+
 import threading, logging, numpy, time
 
 
@@ -21,7 +37,7 @@ class Base:
         account: LocalAccount,
         child_accounts: List[LocalAccount],
         client: jsonrpc.Client,
-        name: str,
+        name: str,  ## TODO sunmi: use it for diem ID domain name??
         logger: logging.Logger,
     ) -> None:
         self.logger = logger
@@ -37,6 +53,7 @@ class Base:
         self.event_puller.head()
         self.cache: Dict[str, CommandResponseObject] = {}
         self.bg_worker: str = "disabled"
+        self.name: str = name
 
     def _validate_kyc_data(self, name: str, val: Dict[str, Any]) -> None:
         try:
@@ -89,6 +106,9 @@ class Base:
                 return self.diem_account.refund_metadata(txn.refund_diem_txn_version, txn.refund_reason)  # pyre-ignore
             if txn.subaddress_hex:
                 return self.diem_account.general_metadata(txn.subaddress(), str(txn.payee))
+            ## TODO sunmi
+            if txn.payee_onchain_address:
+                return payment metadata
         elif txn.reference_id:
             cmd = self.store.find(PaymentCommand, reference_id=txn.reference_id)
             return self.diem_account.travel_metadata(cmd.to_offchain_command())
@@ -128,8 +148,8 @@ class OffChainAPI(Base):
                     "unknown command_type: %s" % request.command_type,
                     field="command_type",
                 )
-            getattr(self, handler)(sender_address, request)
-            return offchain.reply_request(cid=request.cid)
+            result = getattr(self, handler)(sender_address, request)
+            return offchain.reply_request(cid=request.cid, result=result)
         except offchain.Error as e:
             err_msg = "process offchain request failed, sender_address: %s, request: %s"
             self.logger.exception(err_msg, sender_address, request)
@@ -151,6 +171,32 @@ class OffChainAPI(Base):
             subaddress = utils.hex(new_offchain_cmd.my_subaddress(self.diem_account.hrp))
             account_id = self.store.find(Subaddress, subaddress_hex=subaddress).account_id
             self._create_payment_command(account_id, new_offchain_cmd, validate=True)
+
+    def _handle_offchain_reference_i_d_command(
+        self, request_sender_address: str, request: offchain.CommandRequestObject
+    ) -> Dict[str, Any]:
+        if request.command_type != CommandType.ReferenceIDCommand:
+            ## should we raise another command since technically it could be valid command type but not the right use case?
+            raise protocol_error(
+                ErrorCode.unknown_command_type,
+                f"unknown command_type: {request.command_type}",
+                field="command_type",
+            )
+        # Check if reference ID is duplicate
+        print("=====================================")
+        print(request.command)
+        print(request)
+        ref_id_command_object = from_dict(request.command, ReferenceIDCommandObject)
+        try:
+            txn = self.store.find(Transaction, reference_id=ref_id_command_object.reference_id)
+            msg = f"Reference ID {ref_id_command_object.reference_id} already exists for transaction {txn.id}"
+            raise command_error(ErrorCode.duplicate_reference_id, msg)
+        except NotFoundError:
+            return to_dict(
+                ReferenceIDCommandResultObject(
+                    receiver_address=request_sender_address,
+                )
+            )
 
     def _create_payment_command(self, account_id: str, cmd: offchain.PaymentCommand, validate: bool = False) -> None:
         self.store.create(
@@ -254,12 +300,38 @@ class BackgroundTasks(OffChainAPI):
             self._start_external_payment_txn(txn)
 
     def _start_external_payment_txn(self, txn: Transaction) -> None:
+        # TODO sunmi check transaction obejct to get if diem ID
+        # do ref ID exchange here
+        # response success: update transaction object
+        # failed: you retry with a different reference ID
+        if identifier.is_diem_id(txn.payee):
+            reference_id = str(uuid.uuid4())
+            sender_address, _ = self.diem_account.decode_account_identifier(self.diem_account.account_identifier())
+            try:
+                ref_id_command_response_object = self.offchain.ref_id_exchange_request(
+                    sender=self.store.find(Account, id=txn.account_id).diem_id,
+                    sender_address=sender_address,
+                    receiver=txn.payee,
+                    reference_id=reference_id,
+                    counterparty_account_identifier=identifier.encode_account(
+                        identifier.get_account_identifier_with_diem_id(txn.payee), None, self.diem_account.hrp
+                    ),
+                    sign=self.diem_account.sign_by_compliance_key,
+                )
+                self.store.update(txn, reference_id=reference_id)
+                txn.payee_onchain_address
+            catch duplicate ref id error:
+                return
+            else:
+                throw same error again
+
         if self.offchain.is_under_dual_attestation_limit(txn.currency, txn.amount):
             if not txn.signed_transaction:
                 signed_txn = self.diem_account.submit_p2p(txn, self._txn_metadata(txn))
                 self.store.update(txn, signed_transaction=signed_txn)
         else:
-            if txn.reference_id:
+            # if txn.reference_id:
+            # try:
                 cmd = self.store.find(PaymentCommand, reference_id=txn.reference_id)
                 if cmd.is_sender:
                     if cmd.is_abort:
@@ -272,7 +344,7 @@ class BackgroundTasks(OffChainAPI):
                             by_address=cmd.to_offchain_command().sender_account_address(self.diem_account.hrp),
                         )
                         self.store.update(txn, signed_transaction=signed_txn)
-            else:
+            # except:
                 self.send_initial_payment_command(txn)
 
     def send_initial_payment_command(self, txn: Transaction) -> offchain.PaymentCommand:
@@ -283,6 +355,7 @@ class BackgroundTasks(OffChainAPI):
             currency=txn.currency,
             amount=txn.amount,
             receiver_account_id=str(txn.payee),
+            reference_id=txn.reference_id,
         )
         self._create_payment_command(txn.account_id, command)
         self.store.update(txn, reference_id=command.reference_id())
@@ -365,6 +438,7 @@ class App(BackgroundTasks):
             # setting up mini-wallet stub to reject additional_kyc_data request.
             reject_additional_kyc_data_request=data.get_nullable("reject_additional_kyc_data_request", bool),
         )
+        self.store.update(account, diem_id=account.id)
         balances = data.get_nullable("balances", dict)
         if balances:
             for c, a in balances.items():
